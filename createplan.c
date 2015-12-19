@@ -1438,22 +1438,29 @@ create_mergejoin_plan(PlannerInfo *root,
 	return join_plan;
 }
 
+/* CSI3130 Project 
+Changes made to include both inner and outer relations into the join with 
+inner and outer hash nodes
+*/
+
 static HashJoin *
 create_hashjoin_plan(PlannerInfo *root,
 					 HashPath *best_path,
-					 Plan *outer_plan,
-					 Plan *inner_plan)
+					 Plan *outer_plan, //CSI3130 added plan for outer relation
+					 Plan *inner_plan) //CSI3130 added plan for inner relation
 {
 	List	   *tlist = build_relation_tlist(best_path->jpath.path.parent);
 	List	   *joinclauses;
 	List	   *otherclauses;
 	List	   *hashclauses;
 	HashJoin   *join_plan;
-	Hash	   *hash_plan;
+	Hash	   *hash_plan; 
+	Hash       *outer_hash_plan; //CSI3130 outer hash plan
+
+
 
 	/* Get the join qual clauses (in plain expression form) */
-	if (IS_OUTER_JOIN(best_path->jpath.jointype))
-	{
+	if(IS_OUTER_JOIN(best_path->jpath.jointype)){
 		get_actual_join_clauses(best_path->jpath.joinrestrictinfo,
 								&joinclauses, &otherclauses);
 	}
@@ -1489,12 +1496,19 @@ create_hashjoin_plan(PlannerInfo *root,
 	/*
 	 * Build the hash node and hash join node.
 	 */
+
+	 /* CSI 3130
+	 Implementation to have hash node for both inner plan and outer plan 
+	 Hash Join will now use 2 hash nodes
+	 */
+
 	hash_plan = make_hash(inner_plan);
+	outer_hash_plan = make_hash(outer_plan); // CSI 3130 implementation of outer hash plan
 	join_plan = make_hashjoin(tlist,
 							  joinclauses,
 							  otherclauses,
 							  hashclauses,
-							  outer_plan,
+							  (Plan*) outer_hash_plan, // CSI 3130 added outer hash plan
 							  (Plan *) hash_plan,
 							  best_path->jpath.jointype);
 
