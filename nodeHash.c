@@ -40,11 +40,63 @@ static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
  *		stub for pro forma compliance
  * ----------------------------------------------------------------
  */
+ 
+ /* CSI3130
+ Removed error message and copied the code from MultiExecHash
+ */
 TupleTableSlot *
 ExecHash(HashState *node)
 {
-	elog(ERROR, "Hash node does not support ExecProcNode call convention");
-	return NULL;
+	PlanState  *outerNode;
+	List	   *hashkeys;
+	HashJoinTable hashtable;
+	TupleTableSlot *slot;
+	ExprContext *econtext;
+	uint32		hashvalue;
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStartNode(node->ps.instrument);
+
+	/*
+	 * get state info from node
+	 */
+	outerNode = outerPlanState(node);
+	hashtable = node->hashtable;
+
+	/*
+	 * set expression context
+	 */
+	hashkeys = node->hashkeys;
+	econtext = node->ps.ps_ExprContext;
+
+	/*
+	 * get all inner tuples and insert into the hash table (or temp files)
+	 */
+	for (;;)
+	{
+		slot = ExecProcNode(outerNode);
+		if (TupIsNull(slot))
+			break;
+		hashtable->totalTuples += 1;
+		/* We have to compute the hash value */
+		econtext->ecxt_innertuple = slot;
+		hashvalue = ExecHashGetHashValue(hashtable, econtext, hashkeys);
+		ExecHashTableInsert(hashtable, ExecFetchSlotTuple(slot), hashvalue);
+	}
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStopNodeMulti(node->ps.instrument, hashtable->totalTuples);
+
+	/*
+	 * We do not return the hash table directly because it's not a subtype of
+	 * Node, and so would violate the MultiExecProcNode API.  Instead, our
+	 * parent Hashjoin node is expected to know how to fish it out of our node
+	 * state.  Ugly but not really worth cleaning up, since Hashjoin knows
+	 * quite a bit more about Hash besides that.
+	 */
+	return slot; //CSI3130 changed return type to match the call
 }
 
 /* ----------------------------------------------------------------
@@ -208,13 +260,19 @@ ExecEndHash(HashState *node)
  *		create an empty hashtable data structure for hashjoin.
  * ----------------------------------------------------------------
  */
+ 
+/* CSI3130
+Disabled use of multiple batches
+*/
+ 
+ 
 HashJoinTable
 ExecHashTableCreate(Hash *node, List *hashOperators)
 {
 	HashJoinTable hashtable;
 	Plan	   *outerNode;
 	int			nbuckets;
-	int			nbatch;
+	int			nbatch;  //CSI3130 disabling batches
 	int			nkeys;
 	int			i;
 	ListCell   *ho;
@@ -245,7 +303,7 @@ ExecHashTableCreate(Hash *node, List *hashOperators)
 	hashtable->buckets = NULL;
 	hashtable->nbatch = nbatch;
 	hashtable->curbatch = 0;
-	hashtable->nbatch_original = nbatch;
+	//hashtable->nbatch_original = NULL; // CSI3130 need to disable multibatch ***
 	hashtable->nbatch_outstart = nbatch;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
@@ -749,21 +807,34 @@ ExecHashGetBucketAndBatch(HashJoinTable hashtable,
  *
  * The current outer tuple must be stored in econtext->ecxt_outertuple.
  */
-HeapTuple
-ExecScanHashBucket(HashJoinState *hjstate,
-				   ExprContext *econtext)
+ 
+ /* CSI3130
+ Implemented two probing functions for inner and outer.
+ Need to do: try to implement this into one method with if and else statement on slide 9
+ */
+ 
+HashJoinTuple Innerprobe_ExecScanHashBucket(HashJoinState *hjstate,
+				   ExprContext *econtext) //CSI3130 added inner probe function
 {
 	List	   *hjclauses = hjstate->hashclauses;
-	HashJoinTable hashtable = hjstate->hj_HashTable;
-	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
-	uint32		hashvalue = hjstate->hj_CurHashValue;
+	HashJoinTable hashtable = hjstate->inner_HashTable; //CSI3130 implemented inner hashjoin table
+	HashJoinTuple hashTuple = hjstate->inner_hj_CurTuple; //CSI3130 implemented matched for current inner tuple to outer
+	uint32		hashvalue = hjstate->outer_hj_CurHashValue; //CSI3130 implemented hashvalue for matched inner tuple *** should it be inner?
+	
+	int curBucketNo; //CSI3130 implemented bucket# for inner tuple
+	//TupleTableSlot *tupleSlot;
+	
+	curBucketNo = hjstate->inner_hj_CurBucketNo; //CSI3130 implemented bucket# for inner tuple
+	//tupleSlot = hjstate->hj_InnerTupleSlot; //CSI3130 implemented tuple slot for hash inner tuples
+	
+	
 
 	/*
 	 * hj_CurTuple is NULL to start scanning a new bucket, or the address of
 	 * the last tuple returned from the current bucket.
 	 */
 	if (hashTuple == NULL)
-		hashTuple = hashtable->buckets[hjstate->hj_CurBucketNo];
+		hashTuple = hashtable->buckets[hjstate->inner_hj_CurBucketNo]; //CSI3130 inner implementation of method
 	else
 		hashTuple = hashTuple->next;
 
@@ -771,23 +842,67 @@ ExecScanHashBucket(HashJoinState *hjstate,
 	{
 		if (hashTuple->hashvalue == hashvalue)
 		{
-			HeapTuple	heapTuple = &hashTuple->htup;
-			TupleTableSlot *inntuple;
-
-			/* insert hashtable's tuple into exec slot so ExecQual sees it */
-			inntuple = ExecStoreTuple(heapTuple,
-									  hjstate->hj_HashTupleSlot,
-									  InvalidBuffer,
-									  false);	/* do not pfree */
-			econtext->ecxt_innertuple = inntuple;
+			TupleTableSlot *tupleSlot = hjstate->hj_InnerTupleSlot;
+			econtext->ecxt_innertuple = tupleSlot;
 
 			/* reset temp memory each time to avoid leaks from qual expr */
 			ResetExprContext(econtext);
 
 			if (ExecQual(hjclauses, econtext, false))
 			{
-				hjstate->hj_CurTuple = hashTuple;
-				return heapTuple;
+				hjstate->inner_hj_CurTuple = hashTuple;
+				return hashTuple;
+			}
+		}
+
+		hashTuple = hashTuple->next;
+	}
+
+	/*
+	 * no match
+	 */
+	return NULL;
+}
+
+HashJoinTuple Outerprobe_ExecScanHashBucket(HashJoinState *hjstate,
+				   ExprContext *econtext) //CSI3130 added inner probe function
+{
+	List	   *hjclauses = hjstate->hashclauses;
+	HashJoinTable hashtable = hjstate->outer_HashTable; //CSI3130 implemented inner hashjoin table
+	HashJoinTuple hashTuple = hjstate->outer_hj_CurTuple; //CSI3130 implemented matched for current inner tuple to outer
+	uint32		hashvalue = hjstate->inner_hj_CurHashValue; //CSI3130 implemented hashvalue for matched outer tuple *** should it be outer?
+			
+	int curBucketNo; //CSI3130 implemented bucket# for inner tuple
+	//TupleTableSlot *tupleSlot;
+	
+	curBucketNo = hjstate->outer_hj_CurBucketNo; //CSI3130 implemented bucket# for inner tuple
+	//tupleSlot = hjstate->hj_OuterTupleSlot; //CSI3130 implemented tuple slot for hash inner tuples
+	
+	
+
+	/*
+	 * hj_CurTuple is NULL to start scanning a new bucket, or the address of
+	 * the last tuple returned from the current bucket.
+	 */
+	if (hashTuple == NULL)
+		hashTuple = hashtable->buckets[hjstate->outer_hj_CurBucketNo]; //CSI3130 outer implementation of method
+	else
+		hashTuple = hashTuple->next;
+
+	while (hashTuple != NULL)
+	{
+		if (hashTuple->hashvalue == hashvalue)
+		{
+			TupleTableSlot *tupleSlot = hjstate->hj_OuterTupleSlot; 
+			econtext->ecxt_outertuple = tupleSlot;
+
+			/* reset temp memory each time to avoid leaks from qual expr */
+			ResetExprContext(econtext);
+
+			if (ExecQual(hjclauses, econtext, false))
+			{
+				hjstate->outer_hj_CurTuple = hashTuple;
+				return hashTuple;
 			}
 		}
 
