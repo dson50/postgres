@@ -736,6 +736,11 @@ typedef struct DomainConstraintState
  * abstract superclass for all PlanState-type nodes.
  * ----------------
  */
+
+ /*CSI3130
+ Added slot for current inner tuple
+ */
+
 typedef struct PlanState
 {
 	NodeTag		type;
@@ -770,7 +775,8 @@ typedef struct PlanState
 	/*
 	 * Other run-time state needed by most if not all node types.
 	 */
-	TupleTableSlot *ps_OuterTupleSlot;	/* slot for current "outer" tuple */
+	TupleTableSlot *ps_OuterTupleSlot;	/* CSI3130 slot for current "outer" tuple */
+	TupleTableSlot *ps_InnerTupleSlot; /* CSI3130added slot for current "inner" tuple */ 
 	TupleTableSlot *ps_ResultTupleSlot; /* slot for my result tuples */
 	ExprContext *ps_ExprContext;	/* node's expression-evaluation context */
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
@@ -1109,24 +1115,49 @@ typedef struct MergeJoinState
 typedef struct HashJoinTupleData *HashJoinTuple;
 typedef struct HashJoinTableData *HashJoinTable;
 
+/* CSI3130 Project
+
+Added hash value, bucket#, matching tuple for both inner and outer relations
+Added TupleTableSlot for inner relation
+Added slot for hashed tuples for both inner and outer relations
+Added token for not empty inner relation
+Added tokens for used inner and outer tuples;
+Added indices for 
+*/
+
+
 typedef struct HashJoinState
 {
 	JoinState	js;				/* its first field is NodeTag */
 	List	   *hashclauses;	/* list of ExprState nodes */
-	HashJoinTable hj_HashTable;
-	uint32		hj_CurHashValue;
-	int			hj_CurBucketNo;
-	HashJoinTuple hj_CurTuple;
+	HashJoinTable inner_HashTable; //CSI3130 added inner hashjoin table
+	HashJoinTable outer_HashTable; //CSI3130 added outer hashjoin table
+	uint32		inner_hj_CurHashValue; //CSI3130 added hash value for current inner tuple
+	uint32		outer_hj_CurHashValue; //CSI3130 added hash value for current outer tuple
+	int			inner_hj_CurBucketNo; //CSI3130 added bucket# for current inner tuple
+	int			outer_hj_CurBucketNo; //CSI3130 added bucket# for current outer tuple
+	HashJoinTuple inner_hj_CurTuple; //CSI3130 adding matched inner tuple to outer
+	HashJoinTuple outer_hj_CurTuple; //CSI3130 adding matched outer tuple to inner
 	List	   *hj_OuterHashKeys;		/* list of ExprState nodes */
 	List	   *hj_InnerHashKeys;		/* list of ExprState nodes */
 	List	   *hj_HashOperators;		/* list of operator OIDs */
-	TupleTableSlot *hj_OuterTupleSlot;
-	TupleTableSlot *hj_HashTupleSlot;
+	TupleTableSlot *hj_InnerTupleSlot; //CSI3130 added TupleSlot for inner tuples
+	TupleTableSlot *hj_OuterTupleSlot; 
+	TupleTableSlot *hj_HashTupleSlot_inner; //CSI3130 added slot for hashed inner tuples
+	TupleTableSlot *hj_HashTupleSlot_outer; //CSI3130 added slot for hashed outer tuples
 	TupleTableSlot *hj_NullInnerTupleSlot;
 	TupleTableSlot *hj_FirstOuterTupleSlot;
+	TupleTableSlot *hj_FirstInnerTupleSlot; //CSI 3130 added first tuple retrieved from inner plan
+	bool 		inner_used; // CSI3130 added token for used inner
+	bool 		outer_used; // CSI3130 added token for used outer
 	bool		hj_NeedNewOuter;
-	bool		hj_MatchedOuter;
+	bool 		hj_NeedNewInner; //CSI3130 added token for needing new inner for next call
+	bool		hj_MatchedOuter; 
 	bool		hj_OuterNotEmpty;
+	bool		hj_InnerNotEmpty; //CSI3130 added token for not empty inner relation
+	int 		matched_probeinner; // CSI3130 match from inner probe
+	int 		matched_probeouter; // CSI3130 match from outer probe
+	bool 		retrieveInner; //CSI3130 true if T for inner and F for outer
 } HashJoinState;
 
 
